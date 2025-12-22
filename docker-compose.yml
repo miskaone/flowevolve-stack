@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ===========================================
   # TRAEFIK - Reverse Proxy + Auto SSL
@@ -93,6 +91,30 @@ services:
       - wal_level=logical
       - -c
       - max_connections=200
+
+  # Database Role Password Setup (runs once then exits)
+  supabase-db-init:
+    image: supabase/postgres:15.8.1.060
+    container_name: supabase-db-init
+    restart: "no"
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    entrypoint: >
+      bash -c '
+      echo "Updating Supabase database role passwords..."
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_auth_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_storage_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE authenticator WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_replication_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_read_only_user WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
+      echo "Role passwords updated successfully!"
+      '
 
   # Supabase Studio (Dashboard)
   supabase-studio:
@@ -327,6 +349,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.supabase-api.rule=Host(`${SUPABASE_HOST}`) && PathPrefix(`/rest/v1`, `/auth/v1`, `/storage/v1`, `/realtime/v1`, `/functions/v1`)"
@@ -376,6 +400,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # PostgREST
   supabase-rest:
@@ -395,6 +421,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Realtime
   supabase-realtime:
@@ -425,6 +453,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Storage
   supabase-storage:
@@ -457,6 +487,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
       supabase-rest:
         condition: service_started
 
@@ -497,6 +529,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Analytics (Logflare)
   supabase-analytics:
@@ -527,6 +561,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Edge Functions
   supabase-edge-functions:
@@ -547,6 +583,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Connection Pooler (Supavisor)
   supabase-pooler:
@@ -579,6 +617,8 @@ services:
     depends_on:
       supabase-db:
         condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
 # ===========================================
 # NETWORKS
