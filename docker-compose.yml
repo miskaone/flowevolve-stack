@@ -1,0 +1,600 @@
+version: "3.8"
+
+services:
+  # ===========================================
+  # TRAEFIK - Reverse Proxy + Auto SSL
+  # ===========================================
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "traefik-certificates:/letsencrypt"
+    networks:
+      - proxy
+
+  # ===========================================
+  # N8N - Workflow Automation
+  # ===========================================
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - WEBHOOK_URL=https://${N8N_HOST}/
+      - GENERIC_TIMEZONE=${TIMEZONE}
+      - N8N_EMAIL_MODE=smtp
+      - N8N_SMTP_HOST=${SMTP_HOST}
+      - N8N_SMTP_PORT=${SMTP_PORT}
+      - N8N_SMTP_USER=${SMTP_USER}
+      - N8N_SMTP_PASS=${SMTP_PASS}
+      - N8N_SMTP_SENDER=${SMTP_SENDER}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`${N8N_HOST}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  # ===========================================
+  # SUPABASE - Backend as a Service
+  # ===========================================
+
+  # PostgreSQL Database
+  supabase-db:
+    image: supabase/postgres:15.8.1.060
+    container_name: supabase-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY}
+    volumes:
+      - supabase-db-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    networks:
+      - supabase
+      - proxy
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_connections=200
+
+  # Supabase Studio (Dashboard)
+  supabase-studio:
+    image: supabase/studio:latest
+    container_name: supabase-studio
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/profile', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      STUDIO_PG_META_URL: http://supabase-meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      SUPABASE_URL: https://${SUPABASE_HOST}
+      SUPABASE_PUBLIC_URL: https://${SUPABASE_HOST}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      LOGFLARE_API_KEY: ${LOGFLARE_API_KEY}
+      LOGFLARE_URL: http://supabase-analytics:4000
+      NEXT_PUBLIC_ENABLE_LOGS: true
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+    networks:
+      - supabase
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.supabase.rule=Host(`${SUPABASE_HOST}`)"
+      - "traefik.http.routers.supabase.entrypoints=websecure"
+      - "traefik.http.routers.supabase.tls.certresolver=letsencrypt"
+      - "traefik.http.services.supabase.loadbalancer.server.port=3000"
+
+  # Kong API Gateway
+  supabase-kong:
+    image: kong:2.8.1
+    container_name: supabase-kong
+    restart: unless-stopped
+    entrypoint: >
+      bash -c '
+      cat > /home/kong/kong.yml <<EOF
+      _format_version: "2.1"
+      _transform: true
+      consumers:
+        - username: DASHBOARD
+        - username: anon
+          keyauth_credentials:
+            - key: $${SUPABASE_ANON_KEY}
+        - username: service_role
+          keyauth_credentials:
+            - key: $${SUPABASE_SERVICE_KEY}
+      acls:
+        - consumer: anon
+          group: anon
+        - consumer: service_role
+          group: admin
+      services:
+        - name: auth-v1-open
+          url: http://supabase-auth:9999/verify
+          routes:
+            - name: auth-v1-open
+              strip_path: true
+              paths:
+                - /auth/v1/verify
+          plugins:
+            - name: cors
+        - name: auth-v1-open-callback
+          url: http://supabase-auth:9999/callback
+          routes:
+            - name: auth-v1-open-callback
+              strip_path: true
+              paths:
+                - /auth/v1/callback
+          plugins:
+            - name: cors
+        - name: auth-v1-open-authorize
+          url: http://supabase-auth:9999/authorize
+          routes:
+            - name: auth-v1-open-authorize
+              strip_path: true
+              paths:
+                - /auth/v1/authorize
+          plugins:
+            - name: cors
+        - name: auth-v1
+          url: http://supabase-auth:9999/
+          routes:
+            - name: auth-v1
+              strip_path: true
+              paths:
+                - /auth/v1/
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: false
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: rest-v1
+          url: http://supabase-rest:3000/
+          routes:
+            - name: rest-v1
+              strip_path: true
+              paths:
+                - /rest/v1/
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: true
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: graphql-v1
+          url: http://supabase-rest:3000/rpc/graphql
+          routes:
+            - name: graphql-v1
+              strip_path: true
+              paths:
+                - /graphql/v1
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: true
+            - name: request-transformer
+              config:
+                add:
+                  headers:
+                    - Content-Profile:graphql_public
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: realtime-v1-ws
+          url: http://supabase-realtime:4000/socket
+          routes:
+            - name: realtime-v1-ws
+              strip_path: true
+              paths:
+                - /realtime/v1/
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: false
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: storage-v1
+          url: http://supabase-storage:5000/
+          routes:
+            - name: storage-v1
+              strip_path: true
+              paths:
+                - /storage/v1/
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: false
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: functions-v1
+          url: http://supabase-edge-functions:9000/
+          routes:
+            - name: functions-v1
+              strip_path: true
+              paths:
+                - /functions/v1/
+          plugins:
+            - name: cors
+            - name: key-auth
+              config:
+                hide_credentials: false
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+                  - anon
+        - name: meta
+          url: http://supabase-meta:8080/
+          routes:
+            - name: meta
+              strip_path: true
+              paths:
+                - /pg/
+          plugins:
+            - name: key-auth
+              config:
+                hide_credentials: false
+            - name: acl
+              config:
+                hide_groups_header: true
+                allow:
+                  - admin
+      EOF
+      exec /docker-entrypoint.sh kong docker-start'
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    networks:
+      - supabase
+      - proxy
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.supabase-api.rule=Host(`${SUPABASE_HOST}`) && PathPrefix(`/rest/v1`, `/auth/v1`, `/storage/v1`, `/realtime/v1`, `/functions/v1`)"
+      - "traefik.http.routers.supabase-api.entrypoints=websecure"
+      - "traefik.http.routers.supabase-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.supabase-api.loadbalancer.server.port=8000"
+
+  # GoTrue Auth
+  supabase-auth:
+    image: supabase/gotrue:v2.177.0
+    container_name: supabase-auth
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: https://${SUPABASE_HOST}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: true
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: false
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT}
+      GOTRUE_SMTP_USER: ${SMTP_USER}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_MAX_FREQUENCY: 1s
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # PostgREST
+  supabase-rest:
+    image: postgrest/postgrest:v12.2.12
+    container_name: supabase-rest
+    restart: unless-stopped
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # Realtime
+  supabase-realtime:
+    image: supabase/realtime:v2.34.47
+    container_name: supabase-realtime
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "-H", "Authorization: Bearer ${ANON_KEY}", "http://localhost:4000/api/tenants/realtime-dev/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      PORT: 4000
+      DB_HOST: supabase-db
+      DB_PORT: 5432
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: postgres
+      DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
+      DB_ENC_KEY: supabaserealtime
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # Storage
+  supabase-storage:
+    image: supabase/storage-api:v1.25.7
+    container_name: supabase-storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://supabase-rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: us-east-1
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://supabase-imgproxy:8080
+    volumes:
+      - supabase-storage-data:/var/lib/storage
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+      supabase-rest:
+        condition: service_started
+
+  # Image Proxy
+  supabase-imgproxy:
+    image: darthsim/imgproxy:v3.8.0
+    container_name: supabase-imgproxy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      IMGPROXY_BIND: ":8080"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: "true"
+    volumes:
+      - supabase-storage-data:/var/lib/storage:ro
+    networks:
+      - supabase
+
+  # Postgres Meta
+  supabase-meta:
+    image: supabase/postgres-meta:v0.91.0
+    container_name: supabase-meta
+    restart: unless-stopped
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: supabase-db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # Analytics (Logflare)
+  supabase-analytics:
+    image: supabase/logflare:1.14.2
+    container_name: supabase-analytics
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      LOGFLARE_NODE_HOST: 127.0.0.1
+      DB_USERNAME: supabase_admin
+      DB_DATABASE: postgres
+      DB_HOSTNAME: supabase-db
+      DB_PORT: 5432
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_SCHEMA: _analytics
+      LOGFLARE_API_KEY: ${LOGFLARE_API_KEY}
+      LOGFLARE_SINGLE_TENANT: "true"
+      LOGFLARE_SUPABASE_MODE: "true"
+      POSTGRES_BACKEND_URL: postgresql://supabase_admin:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      POSTGRES_BACKEND_SCHEMA: _analytics
+      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # Edge Functions
+  supabase-edge-functions:
+    image: supabase/edge-runtime:v1.67.4
+    container_name: supabase-edge-functions
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_URL: http://supabase-kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      VERIFY_JWT: "false"
+    volumes:
+      - supabase-functions:/home/deno/functions
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+  # Connection Pooler (Supavisor)
+  supabase-pooler:
+    image: supabase/supavisor:2.6.1
+    container_name: supabase-pooler
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "http://localhost:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      PORT: 4000
+      POSTGRES_PORT: 6543
+      POSTGRES_HOST: supabase-db
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+    ports:
+      - "6543:6543"
+    networks:
+      - supabase
+      - proxy
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+# ===========================================
+# NETWORKS
+# ===========================================
+networks:
+  proxy:
+    driver: bridge
+  supabase:
+    driver: bridge
+
+# ===========================================
+# VOLUMES
+# ===========================================
+volumes:
+  traefik-certificates:
+  n8n_data:
+  supabase-db-data:
+  supabase-storage-data:
+  supabase-functions:
