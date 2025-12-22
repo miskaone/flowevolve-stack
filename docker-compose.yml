@@ -99,22 +99,28 @@ services:
     restart: "no"
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
+      SUPABASE_PASSWORD: ${POSTGRES_PASSWORD}
     networks:
       - supabase
     depends_on:
       supabase-db:
         condition: service_healthy
-    entrypoint: >
-      bash -c '
-      echo "Updating Supabase database role passwords..."
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_auth_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_storage_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE authenticator WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_replication_admin WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_read_only_user WITH PASSWORD '"'"'$${PGPASSWORD}'"'"';" || true
-      echo "Role passwords updated successfully!"
-      '
+    command:
+      - bash
+      - -c
+      - |
+        echo "Waiting for database to be ready..."
+        sleep 5
+        echo "Updating Supabase database role passwords..."
+        psql -h supabase-db -U postgres -d postgres <<-EOSQL
+          ALTER ROLE supabase_admin WITH PASSWORD '$${SUPABASE_PASSWORD}';
+          ALTER ROLE supabase_auth_admin WITH PASSWORD '$${SUPABASE_PASSWORD}';
+          ALTER ROLE supabase_storage_admin WITH PASSWORD '$${SUPABASE_PASSWORD}';
+          ALTER ROLE authenticator WITH PASSWORD '$${SUPABASE_PASSWORD}';
+          ALTER ROLE supabase_replication_admin WITH PASSWORD '$${SUPABASE_PASSWORD}';
+          ALTER ROLE supabase_read_only_user WITH PASSWORD '$${SUPABASE_PASSWORD}';
+        EOSQL
+        echo "Role passwords updated successfully!"
 
   # Supabase Studio (Dashboard)
   supabase-studio:
