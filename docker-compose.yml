@@ -91,6 +91,8 @@ services:
       - wal_level=logical
       - -c
       - max_connections=200
+      - -c
+      - listen_addresses=*
 
   # Database Role Password Setup (runs once then exits)
   supabase-db-init:
