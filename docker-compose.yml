@@ -101,7 +101,6 @@ services:
     restart: "no"
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
-      SUPABASE_PASSWORD: ${POSTGRES_PASSWORD}
     networks:
       - supabase
     depends_on:
@@ -117,17 +116,17 @@ services:
             echo "Database is ready!"
             break
           fi
-          echo "Attempt $i: Database not ready, waiting 3 seconds..."
+          echo "Attempt $$i: Database not ready, waiting 3 seconds..."
           sleep 3
         done
         sleep 2
-        echo "Updating Supabase database role passwords..."
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_admin WITH PASSWORD '${SUPABASE_PASSWORD}';"
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_auth_admin WITH PASSWORD '${SUPABASE_PASSWORD}';"
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_storage_admin WITH PASSWORD '${SUPABASE_PASSWORD}';"
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE authenticator WITH PASSWORD '${SUPABASE_PASSWORD}';"
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_replication_admin WITH PASSWORD '${SUPABASE_PASSWORD}';"
-        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_read_only_user WITH PASSWORD '${SUPABASE_PASSWORD}';"
+        echo "Updating Supabase database role passwords to: $$PGPASSWORD"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_admin WITH PASSWORD '$$PGPASSWORD';"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_auth_admin WITH PASSWORD '$$PGPASSWORD';"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_storage_admin WITH PASSWORD '$$PGPASSWORD';"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE authenticator WITH PASSWORD '$$PGPASSWORD';"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_replication_admin WITH PASSWORD '$$PGPASSWORD';"
+        psql -h supabase-db -U postgres -d postgres -c "ALTER ROLE supabase_read_only_user WITH PASSWORD '$$PGPASSWORD';"
         echo "Role passwords updated successfully!"
 
   # Supabase Studio (Dashboard)
@@ -586,31 +585,32 @@ services:
       supabase-db-init:
         condition: service_completed_successfully
 
-  # Edge Functions
-  supabase-edge-functions:
-    image: supabase/edge-runtime:v1.67.4
-    container_name: supabase-edge-functions
-    restart: unless-stopped
-    command:
-      - start
-      - --main-service
-      - /home/deno/functions/main
-    environment:
-      JWT_SECRET: ${JWT_SECRET}
-      SUPABASE_URL: http://supabase-kong:8000
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
-      VERIFY_JWT: "false"
-    volumes:
-      - ./functions:/home/deno/functions:ro
-    networks:
-      - supabase
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-      supabase-db-init:
-        condition: service_completed_successfully
+  # Edge Functions - Disabled (Hostinger deployment doesn't support bind mounts)
+  # To enable: deploy function files to persistent storage
+  # supabase-edge-functions:
+  #   image: supabase/edge-runtime:v1.67.4
+  #   container_name: supabase-edge-functions
+  #   restart: unless-stopped
+  #   command:
+  #     - start
+  #     - --main-service
+  #     - /home/deno/functions/main
+  #   environment:
+  #     JWT_SECRET: ${JWT_SECRET}
+  #     SUPABASE_URL: http://supabase-kong:8000
+  #     SUPABASE_ANON_KEY: ${ANON_KEY}
+  #     SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+  #     SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+  #     VERIFY_JWT: "false"
+  #   volumes:
+  #     - ./functions:/home/deno/functions:ro
+  #   networks:
+  #     - supabase
+  #   depends_on:
+  #     supabase-db:
+  #       condition: service_healthy
+  #     supabase-db-init:
+  #       condition: service_completed_successfully
 
   # Connection Pooler (Supavisor)
   supabase-pooler:
