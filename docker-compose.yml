@@ -371,7 +371,7 @@ services:
         condition: service_completed_successfully
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.supabase-api.rule=Host(`${SUPABASE_HOST}`) && PathPrefix(`/rest/v1`, `/auth/v1`, `/storage/v1`, `/realtime/v1`, `/functions/v1`)"
+      - "traefik.http.routers.supabase-api.rule=Host(`${SUPABASE_HOST}`) && (PathPrefix(`/rest/v1`) || PathPrefix(`/auth/v1`) || PathPrefix(`/storage/v1`) || PathPrefix(`/realtime/v1`) || PathPrefix(`/functions/v1`))"
       - "traefik.http.routers.supabase-api.entrypoints=websecure"
       - "traefik.http.routers.supabase-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.supabase-api.loadbalancer.server.port=8000"
@@ -586,31 +586,31 @@ services:
       supabase-db-init:
         condition: service_completed_successfully
 
-  # Edge Functions - Disabled (requires function files)
-  # supabase-edge-functions:
-  #   image: supabase/edge-runtime:v1.67.4
-  #   container_name: supabase-edge-functions
-  #   restart: unless-stopped
-  #   command:
-  #     - start
-  #     - --main-service
-  #     - /home/deno/functions/main
-  #   environment:
-  #     JWT_SECRET: ${JWT_SECRET}
-  #     SUPABASE_URL: http://supabase-kong:8000
-  #     SUPABASE_ANON_KEY: ${ANON_KEY}
-  #     SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-  #     SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
-  #     VERIFY_JWT: "false"
-  #   volumes:
-  #     - supabase-functions:/home/deno/functions
-  #   networks:
-  #     - supabase
-  #   depends_on:
-  #     supabase-db:
-  #       condition: service_healthy
-  #     supabase-db-init:
-  #       condition: service_completed_successfully
+  # Edge Functions
+  supabase-edge-functions:
+    image: supabase/edge-runtime:v1.67.4
+    container_name: supabase-edge-functions
+    restart: unless-stopped
+    command:
+      - start
+      - --main-service
+      - /home/deno/functions/main
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_URL: http://supabase-kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
+      VERIFY_JWT: "false"
+    volumes:
+      - ./functions:/home/deno/functions:ro
+    networks:
+      - supabase
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+      supabase-db-init:
+        condition: service_completed_successfully
 
   # Connection Pooler (Supavisor)
   supabase-pooler:
@@ -663,4 +663,3 @@ volumes:
   n8n_data:
   supabase-db-data:
   supabase-storage-data:
-  # supabase-functions:  # Disabled with edge-functions
