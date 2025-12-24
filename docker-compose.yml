@@ -158,7 +158,7 @@ services:
       - "traefik.http.routers.supabase.tls.certresolver=letsencrypt"
       - "traefik.http.services.supabase.loadbalancer.server.port=3000"
 
-  # Kong API Gateway (using eval for shell variable expansion - official Supabase method)
+  # Kong API Gateway (using sed for safe variable substitution)
   supabase-kong:
     image: kong:2.8.1
     container_name: supabase-kong
@@ -167,17 +167,17 @@ services:
     command:
       - -c
       - |
-        cat > /tmp/kong.template.yml << 'KONGEOF'
+        cat > /tmp/kong.yml << 'KONGEOF'
         _format_version: "2.1"
         _transform: true
         consumers:
           - username: DASHBOARD
           - username: anon
             keyauth_credentials:
-              - key: $SUPABASE_ANON_KEY
+              - key: ANON_KEY_PLACEHOLDER
           - username: service_role
             keyauth_credentials:
-              - key: $SUPABASE_SERVICE_KEY
+              - key: SERVICE_KEY_PLACEHOLDER
         acls:
           - consumer: anon
             group: anon
@@ -323,7 +323,7 @@ services:
                   allow:
                     - admin
         KONGEOF
-        eval "echo \"$(cat /tmp/kong.template.yml)\"" > /home/kong/kong.yml
+        sed -e "s|ANON_KEY_PLACEHOLDER|$SUPABASE_ANON_KEY|g" -e "s|SERVICE_KEY_PLACEHOLDER|$SUPABASE_SERVICE_KEY|g" /tmp/kong.yml > /home/kong/kong.yml
         exec /docker-entrypoint.sh kong docker-start
     environment:
       KONG_DATABASE: "off"
