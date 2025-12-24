@@ -158,12 +158,174 @@ services:
       - "traefik.http.routers.supabase.tls.certresolver=letsencrypt"
       - "traefik.http.services.supabase.loadbalancer.server.port=3000"
 
-  # Kong API Gateway (using eval for runtime env var expansion)
+  # Kong API Gateway (using envsubst for runtime env var expansion)
   supabase-kong:
     image: kong:2.8.1
     container_name: supabase-kong
     restart: unless-stopped
-    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+    entrypoint: bash
+    command:
+      - -c
+      - |
+        export SUPABASE_ANON_KEY SUPABASE_SERVICE_KEY
+        cat > /tmp/kong.template.yml << 'KONGTEMPLATE'
+        _format_version: "2.1"
+        _transform: true
+        consumers:
+          - username: DASHBOARD
+          - username: anon
+            keyauth_credentials:
+              - key: ${SUPABASE_ANON_KEY}
+          - username: service_role
+            keyauth_credentials:
+              - key: ${SUPABASE_SERVICE_KEY}
+        acls:
+          - consumer: anon
+            group: anon
+          - consumer: service_role
+            group: admin
+        services:
+          - name: auth-v1-open
+            url: http://supabase-auth:9999/verify
+            routes:
+              - name: auth-v1-open
+                strip_path: true
+                paths:
+                  - /auth/v1/verify
+            plugins:
+              - name: cors
+          - name: auth-v1-open-callback
+            url: http://supabase-auth:9999/callback
+            routes:
+              - name: auth-v1-open-callback
+                strip_path: true
+                paths:
+                  - /auth/v1/callback
+            plugins:
+              - name: cors
+          - name: auth-v1-open-authorize
+            url: http://supabase-auth:9999/authorize
+            routes:
+              - name: auth-v1-open-authorize
+                strip_path: true
+                paths:
+                  - /auth/v1/authorize
+            plugins:
+              - name: cors
+          - name: auth-v1
+            url: http://supabase-auth:9999/
+            routes:
+              - name: auth-v1
+                strip_path: true
+                paths:
+                  - /auth/v1/
+            plugins:
+              - name: cors
+              - name: key-auth
+                config:
+                  hide_credentials: false
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+                    - anon
+          - name: rest-v1
+            url: http://supabase-rest:3000/
+            routes:
+              - name: rest-v1
+                strip_path: true
+                paths:
+                  - /rest/v1/
+            plugins:
+              - name: cors
+              - name: key-auth
+                config:
+                  hide_credentials: true
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+                    - anon
+          - name: graphql-v1
+            url: http://supabase-rest:3000/rpc/graphql
+            routes:
+              - name: graphql-v1
+                strip_path: true
+                paths:
+                  - /graphql/v1
+            plugins:
+              - name: cors
+              - name: key-auth
+                config:
+                  hide_credentials: true
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - Content-Profile:graphql_public
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+                    - anon
+          - name: realtime-v1-ws
+            url: http://supabase-realtime:4000/socket
+            routes:
+              - name: realtime-v1-ws
+                strip_path: true
+                paths:
+                  - /realtime/v1/
+            plugins:
+              - name: cors
+              - name: key-auth
+                config:
+                  hide_credentials: false
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+                    - anon
+          - name: storage-v1
+            url: http://supabase-storage:5000/
+            routes:
+              - name: storage-v1
+                strip_path: true
+                paths:
+                  - /storage/v1/
+            plugins:
+              - name: cors
+              - name: key-auth
+                config:
+                  hide_credentials: false
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+                    - anon
+          - name: meta
+            url: http://supabase-meta:8080/
+            routes:
+              - name: meta
+                strip_path: true
+                paths:
+                  - /pg/
+            plugins:
+              - name: key-auth
+                config:
+                  hide_credentials: false
+              - name: acl
+                config:
+                  hide_groups_header: true
+                  allow:
+                    - admin
+        KONGTEMPLATE
+        envsubst '$$SUPABASE_ANON_KEY $$SUPABASE_SERVICE_KEY' < /tmp/kong.template.yml > /home/kong/kong.yml
+        exec /docker-entrypoint.sh kong docker-start
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
@@ -175,8 +337,6 @@ services:
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
-    volumes:
-      - ./volumes/api/kong.yml:/home/kong/temp.yml:ro
     networks:
       - supabase
       - proxy
