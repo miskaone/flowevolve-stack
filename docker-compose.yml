@@ -341,8 +341,8 @@ services:
                   allow:
                     - admin
         KONGEOF
-        sed -i "s|ANON_KEY_PLACEHOLDER|$SUPABASE_ANON_KEY|g" /home/kong/kong.yml
-        sed -i "s|SERVICE_KEY_PLACEHOLDER|$SUPABASE_SERVICE_KEY|g" /home/kong/kong.yml
+        sed -i "s|ANON_KEY_PLACEHOLDER|$$SUPABASE_ANON_KEY|g" /home/kong/kong.yml
+        sed -i "s|SERVICE_KEY_PLACEHOLDER|$$SUPABASE_SERVICE_KEY|g" /home/kong/kong.yml
         exec /docker-entrypoint.sh kong docker-start
     environment:
       KONG_DATABASE: "off"
